@@ -236,6 +236,7 @@ import {
   DEVIN_NATIVE_PERMISSION_MODES,
 } from "@/lib/nativeHarnessModes";
 import { fetchHosts, useHostModelOptions, useHosts, type Host } from "@/hooks/useHosts";
+import { sandboxModelOptionsKey, useSandboxModelOptions } from "@/hooks/useSandboxModelOptions";
 import { useSkills } from "@/hooks/useSkills";
 import { readArcaHostId, writeArcaHostId } from "@/lib/arcaHost";
 import {
@@ -739,6 +740,14 @@ export async function describeCreateError(res: Response): Promise<string> {
       // FastAPI HTTPException → {detail}; OpenResponses → {error:{message}}.
       const b = body as Record<string, unknown>;
       if (typeof b.detail === "string") return b.detail;
+      if (
+        b.detail &&
+        typeof b.detail === "object" &&
+        "message" in b.detail &&
+        typeof b.detail.message === "string"
+      ) {
+        return b.detail.message;
+      }
       if (
         Array.isArray(b.detail) &&
         b.detail.length > 0 &&
@@ -2463,48 +2472,6 @@ export function NewChatLandingScreen() {
   const availablePiModels =
     hostPiModelOptions ??
     (hostPiModelsLoading || selectedHostId === null ? cachedHostModels?.pi : undefined);
-  const claudeModelOptions = useMemo(
-    () =>
-      sandboxSelected
-        ? CLAUDE_NATIVE_MODELS.map((model) => ({
-            id: model.id,
-            displayName: model.id,
-          }))
-        : (availableClaudeModels ?? []).map((option) => ({
-            id: option.id,
-            model: option.model,
-            displayName: nativeModelLabel(option),
-            // Keep the catalog's default marker: the Default row names the
-            // model a bare launch truly runs, for claude exactly as codex.
-            isDefault: option.isDefault,
-            source: option.source,
-          })),
-    [availableClaudeModels, sandboxSelected],
-  );
-  const codexModelOptions = useMemo(
-    () => (sandboxSelected ? [] : (availableCodexModels ?? [])),
-    [availableCodexModels, sandboxSelected],
-  );
-  // Devin model *families* (claude-opus-5, swe-2, …). Effort is a separate
-  // axis Omnigent carries as reasoning_effort and the runner recombines onto
-  // the id at launch (resolve_devin_launch_model), so the list stays short
-  // instead of enumerating every effort variant.
-  const devinModelOptions = useMemo(
-    () => (sandboxSelected ? [] : (hostDevinModelOptions ?? [])),
-    [hostDevinModelOptions, sandboxSelected],
-  );
-  const piModelOptions = useMemo(
-    () =>
-      sandboxSelected
-        ? []
-        : (availablePiModels ?? []).map((option) => ({
-            id: option.id,
-            model: option.model,
-            displayName: nativeModelLabel(option),
-            source: option.source,
-          })),
-    [availablePiModels, sandboxSelected],
-  );
   // Desktop-shell host status for THIS machine (null outside Electron), so the
   // picker can tag the current machine and offer to auto-connect it.
   const [desktopHost, setDesktopHost] = useState<HostIdentity | null>(null);
@@ -3148,6 +3115,76 @@ export function NewChatLandingScreen() {
     [agentList, effectiveAgentId, pendingAgent],
   );
   const selectedNativeHarness = nativeCodingAgentForAvailableAgent(selectedAgent)?.harness ?? null;
+  const previewHarness = selectedNativeHarness ?? pickedHarness ?? selectedAgent?.harness ?? null;
+  const previewSandboxProvider =
+    sandboxProvider ?? (info !== "loading" ? info.sandbox_provider : null);
+  const sandboxPreviewEnabled =
+    sandboxSelected && previewSandboxProvider !== null && previewHarness !== null;
+  const sandboxModels = useSandboxModelOptions(
+    previewSandboxProvider,
+    previewHarness,
+    effectiveAgentId,
+    cacheUser,
+    sandboxPreviewEnabled,
+  );
+  const sandboxInferenceConfigured = sandboxSelected && sandboxModels.data?.configured === true;
+  const sandboxCatalogPending =
+    sandboxPreviewEnabled && sandboxModels.data === undefined && sandboxModels.isLoading;
+  const sandboxCatalogError = sandboxPreviewEnabled
+    ? (sandboxModels.error?.message ??
+      (sandboxModels.data?.configured && sandboxModels.data.status !== "ready"
+        ? (sandboxModels.data.error ?? "No usable models are available for this harness.")
+        : null))
+    : null;
+  const sandboxCatalog = sandboxInferenceConfigured ? sandboxModels.data!.models : undefined;
+  const claudeModelOptions = useMemo(
+    () =>
+      sandboxSelected
+        ? (sandboxCatalog ??
+          (sandboxCatalogPending || sandboxCatalogError
+            ? []
+            : CLAUDE_NATIVE_MODELS.map((model) => ({ id: model.id, displayName: model.id }))))
+        : (availableClaudeModels ?? []).map((option) => ({
+            id: option.id,
+            model: option.model,
+            displayName: nativeModelLabel(option),
+            // Keep the catalog's default marker: the Default row names the
+            // model a bare launch truly runs, for claude exactly as codex.
+            isDefault: option.isDefault,
+            source: option.source,
+          })),
+    [
+      availableClaudeModels,
+      sandboxSelected,
+      sandboxCatalog,
+      sandboxCatalogPending,
+      sandboxCatalogError,
+    ],
+  );
+  const codexModelOptions = useMemo(
+    () => (sandboxSelected ? (sandboxCatalog ?? []) : (availableCodexModels ?? [])),
+    [availableCodexModels, sandboxSelected, sandboxCatalog],
+  );
+  // Devin model *families* (claude-opus-5, swe-2, …). Effort is a separate
+  // axis Omnigent carries as reasoning_effort and the runner recombines onto
+  // the id at launch (resolve_devin_launch_model), so the list stays short
+  // instead of enumerating every effort variant.
+  const devinModelOptions = useMemo(
+    () => (sandboxSelected ? (sandboxCatalog ?? []) : (hostDevinModelOptions ?? [])),
+    [hostDevinModelOptions, sandboxSelected, sandboxCatalog],
+  );
+  const piModelOptions = useMemo(
+    () =>
+      sandboxSelected
+        ? (sandboxCatalog ?? [])
+        : (availablePiModels ?? []).map((option) => ({
+            id: option.id,
+            model: option.model,
+            displayName: nativeModelLabel(option),
+            source: option.source,
+          })),
+    [availablePiModels, sandboxSelected, sandboxCatalog],
+  );
   const supportsPermissionMode = nativeAgentHasCapability(selectedAgent, "permissionMode");
   const supportsDevinMode = nativeAgentHasCapability(selectedAgent, "devinMode");
   const supportsApprovalMode = nativeAgentHasCapability(selectedAgent, "approvalMode");
@@ -3176,6 +3213,7 @@ export function NewChatLandingScreen() {
   // family instead of losing the row — and loses it only when neither router
   // can answer.
   const smartRoutingEligible =
+    !sandboxInferenceConfigured &&
     smartRoutingEnabled &&
     selectedNativeHarness !== null &&
     SMART_ROUTING_ARMS.some((harness) => harness === selectedNativeHarness) &&
@@ -3193,7 +3231,9 @@ export function NewChatLandingScreen() {
     brainHarnessLabelsAll,
   );
   const isEntryConfigurable = (agent: AvailableAgent) =>
-    agentHasModelSettings(agent) || agentHasAdvancedSettings(agent, brainHarnessLabelsAll);
+    (sandboxInferenceConfigured && agent.id === effectiveAgentId) ||
+    agentHasModelSettings(agent) ||
+    agentHasAdvancedSettings(agent, brainHarnessLabelsAll);
   // Only an eligible harness can display active per-turn Smart Routing.
   const routingOn = smartRoutingEligible && costControlMode === "on";
   // Both fully-auto flavors own harness and model, but only top-level Smart
@@ -3206,18 +3246,34 @@ export function NewChatLandingScreen() {
   const configSummary = useMemo((): { label: string; value: string }[] => {
     const sourceRows = (options: readonly NativeModelOption[]) => {
       if (routingOn) return [];
+      if (sandboxInferenceConfigured && sandboxModels.data?.provider_label) {
+        return [{ label: "Connection", value: sandboxModels.data.provider_label }];
+      }
       const source =
         options.find((option) => option.id === pickedModel)?.source ??
         options.find((option) => option.source)?.source;
       return modelConfigurationSourceRows(source);
     };
+    if (sandboxInferenceConfigured && selectedNativeHarness === null) {
+      const model = sandboxCatalog?.find((row) => row.id === pickedModel);
+      return [
+        {
+          label: "Model",
+          value: model ? nativeModelLabel(model) : defaultModelLabel(sandboxCatalog ?? []),
+        },
+        ...(sandboxModels.data?.provider_label
+          ? [{ label: "Connection", value: sandboxModels.data.provider_label }]
+          : []),
+      ];
+    }
     if (smartRoutingHarnessSelected) {
       // Routing inherits the picked harness's defaults, not a previous selection's mode.
       return [{ label: "Permission mode", value: AUTO_PERMISSION_MODE.label }];
     }
     if (supportsModelPicker && !supportsPermissionMode) {
       const modelValue =
-        piModelOptions.find((model) => model.id === pickedModel)?.displayName ?? "Default";
+        piModelOptions.find((model) => model.id === pickedModel)?.displayName ??
+        (sandboxInferenceConfigured ? defaultModelLabel(piModelOptions) : "Default");
       const thinkingLevelValue = normalizeEffortLabel(pickedEffort);
       return [
         { label: "Model", value: modelValue },
@@ -3318,6 +3374,9 @@ export function NewChatLandingScreen() {
     }
     return routingRow;
   }, [
+    sandboxInferenceConfigured,
+    sandboxCatalog,
+    sandboxModels.data?.provider_label,
     smartRoutingHarnessSelected,
     supportsPermissionMode,
     supportsApprovalMode,
@@ -3348,30 +3407,36 @@ export function NewChatLandingScreen() {
   const permissionConfigRow = configSummary.find(
     (row) => row.label === "Permission mode" || row.label === "Mode",
   );
-  const pickerModelOptions: readonly NativeModelOption[] = supportsPermissionMode
-    ? claudeModelOptions
-    : selectedNativeHarness === "devin-native"
-      ? devinModelOptions
-      : selectedNativeHarness === "pi-native"
-        ? piModelOptions
-        : selectedNativeHarness === "codex-native"
-          ? codexModelOptions
-          : [];
+  const pickerModelOptions: readonly NativeModelOption[] = sandboxInferenceConfigured
+    ? (sandboxCatalog ?? [])
+    : supportsPermissionMode
+      ? claudeModelOptions
+      : selectedNativeHarness === "devin-native"
+        ? devinModelOptions
+        : selectedNativeHarness === "pi-native"
+          ? piModelOptions
+          : selectedNativeHarness === "codex-native"
+            ? codexModelOptions
+            : [];
   const [pickerModelSearch, setPickerModelSearch] = useState("");
   const pickerModelsLoading =
-    !sandboxSelected &&
-    selectedHostId !== null &&
-    (selectedNativeHarness === "claude-native"
-      ? hostClaudeModelsLoading
-      : selectedNativeHarness === "codex-native"
-        ? hostCodexModelsLoading
-        : selectedNativeHarness === "pi-native"
-          ? hostPiModelsLoading
-          : selectedNativeHarness === "devin-native"
-            ? hostDevinModelsLoading
-            : false);
-  const pickerModelsError =
-    selectedNativeHarness === "claude-native"
+    sandboxCatalogPending ||
+    (!sandboxSelected &&
+      selectedHostId !== null &&
+      (selectedNativeHarness === "claude-native"
+        ? hostClaudeModelsLoading
+        : selectedNativeHarness === "codex-native"
+          ? hostCodexModelsLoading
+          : selectedNativeHarness === "pi-native"
+            ? hostPiModelsLoading
+            : selectedNativeHarness === "devin-native"
+              ? hostDevinModelsLoading
+              : false));
+  const pickerModelsError = sandboxSelected
+    ? sandboxCatalogError
+      ? new Error(sandboxCatalogError)
+      : null
+    : selectedNativeHarness === "claude-native"
       ? hostClaudeModelsError
       : selectedNativeHarness === "codex-native"
         ? hostCodexModelsError
@@ -3379,6 +3444,7 @@ export function NewChatLandingScreen() {
           ? hostDevinModelsError
           : null;
   const pickerDataLoading =
+    sandboxCatalogPending ||
     agentsLoading ||
     (cachedPickerOptions !== null && (hostsLoading || info === "loading")) ||
     (projectParam !== "" &&
@@ -3392,7 +3458,13 @@ export function NewChatLandingScreen() {
       !routingOn &&
       harnessTriggerDetails.some((row) => row.label === "Model") &&
       (hostsLoading || info === "loading" || pickerModelsLoading));
-  const pickerTarget = JSON.stringify([projectParam, selectedHostId, sandboxSelected]);
+  const pickerTarget = JSON.stringify([
+    projectParam,
+    selectedHostId,
+    sandboxSelected,
+    sandboxSelected ? previewSandboxProvider : null,
+    sandboxSelected ? previewHarness : null,
+  ]);
   const [pickerReadyTarget, setPickerReadyTarget] = useState<string | null>(null);
   // Keep one placeholder through host selection and saved-model restoration.
   // Cached background refreshes have data, so they never reset this readiness.
@@ -3506,13 +3578,15 @@ export function NewChatLandingScreen() {
     writeHarnessOption(harness, options);
   };
   const selectPickerModel = (model: string) => {
-    if (!selectedNativeHarness) return;
+    const selectionHarness =
+      selectedNativeHarness ?? (sandboxInferenceConfigured ? previewHarness : null);
+    if (!selectionHarness) return;
     userPickedModelRef.current = true;
     if (model === MODEL_SELECT_SMART) {
       setPickedModel("");
       setPickedEffort("");
       setCostControlMode("on");
-      rememberPickerOptions(selectedNativeHarness, { routing: "on", model: "", effort: "" });
+      rememberPickerOptions(selectionHarness, { routing: "on", model: "", effort: "" });
       return;
     }
     // Picking the Fusion family lands on its default combo id, which the Lead /
@@ -3522,7 +3596,7 @@ export function NewChatLandingScreen() {
       setPickedModel(fusionDescriptor.default);
       setPickedEffort("");
       setCostControlMode(null);
-      rememberPickerOptions(selectedNativeHarness, {
+      rememberPickerOptions(selectionHarness, {
         model: fusionDescriptor.default,
         effort: "",
         routing: "off",
@@ -3541,7 +3615,7 @@ export function NewChatLandingScreen() {
     setPickedModel(picked);
     setPickedEffort(effort);
     setCostControlMode(null);
-    rememberPickerOptions(selectedNativeHarness, { model: picked, effort, routing: "off" });
+    rememberPickerOptions(selectionHarness, { model: picked, effort, routing: "off" });
   };
   const selectPickerEffort = (effort: string) => {
     if (!selectedNativeHarness) return;
@@ -3588,6 +3662,7 @@ export function NewChatLandingScreen() {
         )}
         <ComposerConfigSections
           models={
+            sandboxInferenceConfigured ||
             supportsModelPicker ||
             supportsPermissionMode ||
             supportsDevinMode ||
@@ -3597,6 +3672,14 @@ export function NewChatLandingScreen() {
                   header: "Models",
                   leading: (
                     <>
+                      {sandboxInferenceConfigured && sandboxModels.data?.provider_label && (
+                        <div
+                          className="px-2 py-1 text-xs text-muted-foreground"
+                          data-testid="sandbox-model-provider"
+                        >
+                          {sandboxModels.data.provider_label}
+                        </div>
+                      )}
                       {selectedNativeHarness === "pi-native" && (
                         <Input
                           aria-label="Search models"
@@ -3620,7 +3703,8 @@ export function NewChatLandingScreen() {
                     </>
                   ),
                   choices: [
-                    ...(pickerModelOptions.length > 0 &&
+                    ...(!sandboxInferenceConfigured &&
+                    pickerModelOptions.length > 0 &&
                     !pickerModelOptions.some((option) => option.isDefault)
                       ? [
                           {
@@ -3722,15 +3806,17 @@ export function NewChatLandingScreen() {
       const saved = readHarnessOptions(native.harness);
       if (saved.routing === "on") return [agent.id, SMART_ROUTING_LABEL];
       const catalog =
-        native.iconKind === "claude"
-          ? claudeModelOptions
-          : native.iconKind === "codex"
-            ? codexModelOptions
-            : native.iconKind === "pi"
-              ? piModelOptions
-              : native.iconKind === "devin"
-                ? devinModelOptions
-                : [];
+        sandboxSelected && native.harness !== previewHarness
+          ? []
+          : native.iconKind === "claude"
+            ? claudeModelOptions
+            : native.iconKind === "codex"
+              ? codexModelOptions
+              : native.iconKind === "pi"
+                ? piModelOptions
+                : native.iconKind === "devin"
+                  ? devinModelOptions
+                  : [];
       const savedFusion = fusionOption(catalog)?.fusion;
       const model = catalog.find((option) => option.id === saved.model);
       const label = visibleModelLabel(
@@ -3956,11 +4042,26 @@ export function NewChatLandingScreen() {
     // derived from the same harness and stay omitted.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
+    sandboxInferenceConfigured,
     selectedNativeHarness,
     claudeModelOptions,
     codexModelOptions,
     piModelOptions,
     projectDefaultModel,
+  ]);
+  useEffect(() => {
+    if (!sandboxInferenceConfigured || sandboxModels.data?.status !== "ready") return;
+    if (pickedModel && !sandboxCatalog?.some((row) => row.id === pickedModel)) {
+      setPickedModel("");
+      setPickedEffort("");
+    }
+  }, [
+    sandboxInferenceConfigured,
+    sandboxModels.data?.configuration_revision,
+    sandboxModels.data?.status,
+    sandboxCatalog,
+    pickedModel,
+    setPickedModel,
   ]);
   // Smart Routing is remembered per harness alongside the mode/model
   // knobs, in its own effect because eligibility depends on the server flag
@@ -4619,6 +4720,7 @@ export function NewChatLandingScreen() {
     !workspaceLoading &&
     !pendingSkillCompletion &&
     pickerSelectionError === null &&
+    sandboxCatalogError === null &&
     selectedAgent != null &&
     (sandboxSelected ? sandboxRepoValid : selectedHost?.status === "online" && workspaceValid) &&
     !creating;
@@ -4633,8 +4735,8 @@ export function NewChatLandingScreen() {
       ? "Loading skills…"
       : pickerLoading || workspaceLoading
         ? "Loading session configuration…"
-        : pickerSelectionError
-          ? pickerSelectionError
+        : pickerSelectionError || sandboxCatalogError
+          ? (pickerSelectionError ?? sandboxCatalogError)
           : sandboxSelected && sandboxRepoOverCap
             ? `This sandbox provider clones at most ${maxSandboxRepos} ${
                 maxSandboxRepos === 1 ? "repository" : "repositories"
@@ -5069,7 +5171,8 @@ export function NewChatLandingScreen() {
         // `modelPicker`), so — like codex-native — pin the pick by harness or
         // the New-Chat selection never reaches `_auto_create_devin_terminal`
         // and Devin launches on its own config default.
-        (agentSupportsModelPicker ||
+        (sandboxInferenceConfigured ||
+          agentSupportsModelPicker ||
           nativeAgent?.harness === "codex-native" ||
           nativeAgent?.harness === "devin-native") &&
         submittedModel
@@ -5255,6 +5358,11 @@ export function NewChatLandingScreen() {
                   ...(createProjectId !== null ? { workspace: null, git: null } : {}),
                   // Omitted when null so a default create is unchanged.
                   ...(sandboxProvider !== null ? { sandbox_provider: sandboxProvider } : {}),
+                  ...(sandboxModels.data?.configuration_revision
+                    ? {
+                        inference_configuration_revision: sandboxModels.data.configuration_revision,
+                      }
+                    : {}),
                 }
               : {
                   host_id: selectedHostId,
@@ -5329,7 +5437,19 @@ export function NewChatLandingScreen() {
           : nextPushedSession(matchOwnCreate, abortPush.signal);
         const confirmed = (async (): Promise<{ id: string } | { error: string }> => {
           const response = await createRequest;
-          if (!response.ok) return { error: await describeCreateError(response) };
+          if (!response.ok) {
+            if (sandboxSelected && response.status === 409) {
+              void queryClient.invalidateQueries({
+                queryKey: sandboxModelOptionsKey(
+                  previewSandboxProvider,
+                  previewHarness,
+                  effectiveAgentId,
+                  cacheUser,
+                ),
+              });
+            }
+            return { error: await describeCreateError(response) };
+          }
           const created = (await response.json()) as {
             id: string;
           };
@@ -6698,6 +6818,11 @@ export function NewChatLandingScreen() {
             </p>
           )}
 
+          {sandboxCatalogError && (
+            <p className="text-sm text-destructive" role="alert">
+              {sandboxCatalogError}
+            </p>
+          )}
           {pickerSelectionError && (
             <p className="mt-3 text-sm text-destructive" role="alert">
               {pickerSelectionError}
