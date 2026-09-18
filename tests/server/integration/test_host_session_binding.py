@@ -1333,6 +1333,7 @@ async def test_managed_wake_fails_when_runner_never_reconnects(
         workspace="/root/workspace",
         agent_id=None,
         sub_agent_name=None,
+        inference_snapshot=None,
     )
     tracker = ManagedLaunchTracker()
     tracker.begin(session_id)
